@@ -30,13 +30,13 @@ def main():
             print("Exiting CLI.")
             break
 
-        answer = rag_simple(
+        rag_result = rag_simple(
             query=query,
             llm=pipeline["llm"],
             retriever=pipeline["rag_retriever"],
-            n_results=config.retrieval_results,
+            config=config,
         )
-        print(f"\nAnswer:\n{answer}")
+        print(f"\nAnswer:\n{rag_result['answer']}")
 
 
 if __name__ == "__main__":

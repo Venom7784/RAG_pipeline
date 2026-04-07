@@ -7,15 +7,36 @@ from .splitter import split_documents
 from .vector_store import VectorStore
 
 
-def rag_simple(query, llm, retriever, n_results):
-    results = retriever.retriever(query=query, n_results=n_results)
+def rag_simple(
+    query,
+    llm,
+    retriever,
+    config: PipelineConfig,
+    n_results: int | None = None,
+    threshold: float | None = None,
+):
+    result_count = n_results if n_results is not None else config.retrieval_results
+    similarity_threshold = (
+        threshold if threshold is not None else config.similarity_threshold
+    )
+    results = retriever.retriever(
+        query=query,
+        n_results=result_count,
+        threshold=similarity_threshold,
+    )
     context = "\n\n".join(doc["content"] for doc in results) if results else ""
     if not context:
-        return "No context found to answer the question"
+        return {
+            "answer": "No context found to answer the question",
+            "results": results,
+        }
     response = llm.invoke(
         f"Answer the Question using this context question={query} context={context}"
     )
-    return response.content
+    return {
+        "answer": response.content,
+        "results": results,
+    }
 
 
 def initialize_pipeline(config: PipelineConfig):
@@ -23,21 +44,31 @@ def initialize_pipeline(config: PipelineConfig):
     split_docs = []
 
     embedding_manager = EmbeddingManager(model_name=config.embedding_model_name)
+    embedding_dimension = embedding_manager.model.get_sentence_embedding_dimension()
     vector_store = VectorStore(
         collection=config.collection_name,
         persist_directory=str(config.persist_directory),
+        embedding_dimension=embedding_dimension,
+        embedding_model_name=config.embedding_model_name,
     )
 
     if vector_store.count() == 0:
         documents = process_pdfs_in_directory(str(config.pdf_directory))
-        split_docs = split_documents(
-            documents=documents,
-            chunk_size=config.chunk_size,
-            chunk_overlap=config.chunk_overlap,
-        )
-        text = [doc.page_content for doc in split_docs]
-        embeddings = embedding_manager(text)
-        vector_store.add_documents(split_docs, embeddings)
+        if documents:
+            split_docs = split_documents(
+                documents=documents,
+                chunk_size=config.chunk_size,
+                chunk_overlap=config.chunk_overlap,
+            )
+            text = [doc.page_content for doc in split_docs]
+            embeddings = embedding_manager(text)
+            vector_store.add_documents(split_docs, embeddings)
+        else:
+            embeddings = []
+            print(
+                f"No PDFs found in '{config.pdf_directory}'. "
+                "The app will start with an empty knowledge base until files are uploaded."
+            )
     else:
         embeddings = []
         print(
@@ -68,21 +99,29 @@ def initialize_pipeline(config: PipelineConfig):
 
 def build_pipeline(config: PipelineConfig):
     documents = process_pdfs_in_directory(str(config.pdf_directory))
-    split_docs = split_documents(
-        documents=documents,
-        chunk_size=config.chunk_size,
-        chunk_overlap=config.chunk_overlap,
-    )
+    split_docs = []
+    if documents:
+        split_docs = split_documents(
+            documents=documents,
+            chunk_size=config.chunk_size,
+            chunk_overlap=config.chunk_overlap,
+        )
 
     embedding_manager = EmbeddingManager(model_name=config.embedding_model_name)
-    text = [doc.page_content for doc in split_docs]
-    embeddings = embedding_manager(text)
+    embeddings = []
+    if split_docs:
+        text = [doc.page_content for doc in split_docs]
+        embeddings = embedding_manager(text)
+    embedding_dimension = embedding_manager.model.get_sentence_embedding_dimension()
 
     vector_store = VectorStore(
         collection=config.collection_name,
         persist_directory=str(config.persist_directory),
+        embedding_dimension=embedding_dimension,
+        embedding_model_name=config.embedding_model_name,
     )
-    vector_store.add_documents(split_docs, embeddings)
+    if split_docs:
+        vector_store.add_documents(split_docs, embeddings)
 
     rag_retriever = RAGRetriever(
         vector_store=vector_store,

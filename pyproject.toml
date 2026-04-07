@@ -1,11 +1,19 @@
 [project]
 name = "rag-pipeline"
 version = "0.1.0"
-description = "Add your description here"
+description = "Chainlit-based PDF RAG app"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "fastapi>=0.115.0",
+    "chainlit>=2.0.0",
+    "chromadb",
+    "langchain",
+    "langchain-community",
+    "langchain-core",
+    "langchain-groq",
     "langchain-text-splitters>=1.1.1",
-    "uvicorn>=0.34.0",
+    "numpy",
+    "pypdf",
+    "python-dotenv",
+    "sentence-transformers",
 ]

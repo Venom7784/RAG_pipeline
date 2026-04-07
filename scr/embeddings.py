@@ -25,7 +25,7 @@ class EmbeddingManager:
     def generate_embeddings(self, text: List[str]) -> np.ndarray:
         if not self.model:
             raise ValueError("Model not Loaded")
-        embeddings = self.model.encode(text, show_progress_bar=True)
+        embeddings = self.model.encode(text, show_progress_bar=True , normalize_embeddings=True)
         return embeddings
 
     def __call__(self, text: List[str]):
