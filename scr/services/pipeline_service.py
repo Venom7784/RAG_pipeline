@@ -57,6 +57,7 @@ class PipelineService:
     def query(self, query: str, n_results: int | None = None):
         pipeline = self.ensure_pipeline()
         result_count = n_results or self.config.retrieval_results
+        rewritten_query = pipeline["rag_retriever"].rewrite_query(query)
         rag_result = rag_simple(
             query=query,
             llm=pipeline["llm"],
@@ -66,6 +67,7 @@ class PipelineService:
         )
         return {
             "query": query,
+            "retrieval_query": rewritten_query,
             "answer": rag_result["answer"],
             "results": rag_result["results"],
         }

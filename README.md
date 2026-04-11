@@ -47,6 +47,33 @@ uv sync
 uv run chainlit run chainlit_app.py --host 0.0.0.0 --port 8000
 ```
 
+## Windows Desktop App
+
+This repo can also be packaged as a Windows desktop app without removing the existing Chainlit app.
+
+How it works:
+- `desktop_launcher.py` starts the Chainlit server locally
+- `pywebview` opens the app inside a native desktop window
+- desktop mode stores PDFs and the Chroma vector store under `%LOCALAPPDATA%\RAGPipeline\data` by default
+
+Run the desktop shell from source:
+```bash
+uv run python desktop_launcher.py
+```
+
+Build the Windows executable:
+```powershell
+.venv\Scripts\python -m pip install pyinstaller
+.\build_windows.ps1
+```
+
+The packaged app will be created under `dist\RAGPipelineDesktop\`.
+
+Notes:
+- `GROQ_API_KEY` is still required, usually via `.env`
+- the existing `chainlit run chainlit_app.py ...` flow continues to work unchanged
+- the first desktop launch may take longer while models and caches initialize
+
 ## Environment Variables
 
 Required:

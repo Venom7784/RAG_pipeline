@@ -22,8 +22,8 @@ def process_pdf_file(file_path: str):
     return document
 
 
-def process_pdfs_in_directory(directory_path: str):
-    """Load all PDFs from a directory using PyPDFLoader."""
+def process_pdfs_in_directory(directory_path: str, recursive: bool = True):
+    """Load all PDFs from a directory (optionally recursively) using PyPDFLoader."""
     pdf_dir = Path(directory_path)
 
     if not pdf_dir.exists():
@@ -36,7 +36,8 @@ def process_pdfs_in_directory(directory_path: str):
 
     documents = []
 
-    for pdf_file in sorted(pdf_dir.glob("*.pdf")):
+    pdf_files = pdf_dir.rglob("*.pdf") if recursive else pdf_dir.glob("*.pdf")
+    for pdf_file in sorted(pdf_files):
         documents.extend(process_pdf_file(str(pdf_file)))
 
     return documents

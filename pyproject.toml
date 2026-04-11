@@ -13,7 +13,11 @@ dependencies = [
     "langchain-groq",
     "langchain-text-splitters>=1.1.1",
     "numpy",
+    "pywebview>=5.0",
     "pypdf",
     "python-dotenv",
     "sentence-transformers",
 ]
+
+[project.scripts]
+rag-desktop = "desktop_launcher:main"

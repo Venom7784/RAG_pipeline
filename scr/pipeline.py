@@ -2,6 +2,7 @@ from .config import PipelineConfig
 from .embeddings import EmbeddingManager
 from .llm import create_llm
 from .loader import process_pdfs_in_directory
+from .query_rewriter import QueryRewriter
 from .retriever import RAGRetriever
 from .splitter import split_documents
 from .vector_store import VectorStore
@@ -76,14 +77,15 @@ def initialize_pipeline(config: PipelineConfig):
             f"with {vector_store.count()} documents."
         )
 
-    rag_retriever = RAGRetriever(
-        vector_store=vector_store,
-        embedding_manager=embedding_manager,
-    )
     llm = create_llm(
         model_name=config.groq_model_name,
         temperature=config.temperature,
         max_tokens=config.max_tokens,
+    )
+    rag_retriever = RAGRetriever(
+        vector_store=vector_store,
+        embedding_manager=embedding_manager,
+        query_rewriter=QueryRewriter(llm=llm),
     )
 
     return {
@@ -123,14 +125,15 @@ def build_pipeline(config: PipelineConfig):
     if split_docs:
         vector_store.add_documents(split_docs, embeddings)
 
-    rag_retriever = RAGRetriever(
-        vector_store=vector_store,
-        embedding_manager=embedding_manager,
-    )
     llm = create_llm(
         model_name=config.groq_model_name,
         temperature=config.temperature,
         max_tokens=config.max_tokens,
+    )
+    rag_retriever = RAGRetriever(
+        vector_store=vector_store,
+        embedding_manager=embedding_manager,
+        query_rewriter=QueryRewriter(llm=llm),
     )
 
     return {
