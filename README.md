@@ -9,6 +9,8 @@ A Chainlit-based Retrieval-Augmented Generation (RAG) app for answering question
 - Vector storage with ChromaDB
 - Question answering with Groq LLM
 - Chainlit chat interface
+- PDF upload directly from the Chainlit attachment (paperclip) button
+- Optional debug commands: `/debug on`, `/debug off`, `/debug status`
 
 ## Local Development
 
@@ -38,6 +40,7 @@ A Chainlit-based Retrieval-Augmented Generation (RAG) app for answering question
    ```
 
 6. Open `http://localhost:8000`
+7. Upload PDFs using the attachment (paperclip) button in Chainlit, then ask questions.
 
 If `uv` hits a Windows cache permission issue, use:
 
@@ -73,6 +76,7 @@ Notes:
 - `GROQ_API_KEY` is still required, usually via `.env`
 - the existing `chainlit run chainlit_app.py ...` flow continues to work unchanged
 - the first desktop launch may take longer while models and caches initialize
+- in desktop mode, uploaded PDFs and vectors are persisted under `%LOCALAPPDATA%\RAGPipeline\data`
 
 ## Environment Variables
 
@@ -121,6 +125,7 @@ Recommended Railway setup:
 - For Railway with a mounted volume, keep your PDFs in `/data/pdf`.
 - The Chroma vector store should persist under `/data/vector_store`.
 - On a fresh Railway volume, the app creates `/data/pdf` and `/data/vector_store` automatically.
-- If `/data/pdf` is empty, the app still starts and waits for PDF uploads.
+- If `/data/pdf` is empty, the app still starts and waits for PDF uploads via attachment.
 - For local development without Railway vars, the app falls back to the repo's `data/` folder.
-- Source chunks are shown in the Chainlit side panel for answer verification.
+- Uploaded PDFs persist on disk unless you delete the configured data directories.
+- Use `/debug on` to include tool and source details in responses.
