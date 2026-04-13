@@ -1,11 +1,33 @@
+import os
+
+from dotenv import load_dotenv
+from langchain_groq import ChatGroq
+
 from .config import PipelineConfig
 from .embeddings import EmbeddingManager
-from .llm import create_llm
 from .loader import process_pdfs_in_directory
 from .query_rewriter import QueryRewriter
 from .retriever import RAGRetriever
 from .splitter import split_documents
 from .vector_store import VectorStore
+
+
+def _create_llm(
+    model_name: str,
+    temperature: float,
+    max_tokens: int,
+):
+    load_dotenv()
+    groq_api_key = os.getenv("GROQ_API_KEY")
+    if not groq_api_key:
+        raise ValueError("GROQ_API_KEY was not found in the environment.")
+
+    return ChatGroq(
+        groq_api_key=groq_api_key,
+        model_name=model_name,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
 
 
 def rag_simple(
@@ -77,7 +99,7 @@ def initialize_pipeline(config: PipelineConfig):
             f"with {vector_store.count()} documents."
         )
 
-    llm = create_llm(
+    llm = _create_llm(
         model_name=config.groq_model_name,
         temperature=config.temperature,
         max_tokens=config.max_tokens,
@@ -125,7 +147,7 @@ def build_pipeline(config: PipelineConfig):
     if split_docs:
         vector_store.add_documents(split_docs, embeddings)
 
-    llm = create_llm(
+    llm = _create_llm(
         model_name=config.groq_model_name,
         temperature=config.temperature,
         max_tokens=config.max_tokens,

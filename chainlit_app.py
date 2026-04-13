@@ -1,19 +1,21 @@
 from __future__ import annotations
 
+from typing import Any
 from pathlib import Path
-from urllib.parse import quote
 
 import chainlit as cl
 from chainlit.server import app
 from fastapi import HTTPException
 from fastapi.responses import FileResponse
 
+from scr.agent import create_app_agent, get_agent_text, invoke_agent
 from scr.config import PipelineConfig
 from scr.services.pipeline_service import PipelineService
 
 
 service = PipelineService(config=PipelineConfig())
-UPLOAD_COMMANDS = {"/upload", "upload pdf", "add pdf"}
+agent = None
+DEBUG_COMMANDS = {"/debug on", "/debug off", "/debug status"}
 
 
 def _resolve_pdf_path(file_name: str) -> Path:
@@ -32,13 +34,104 @@ def _resolve_pdf_path(file_name: str) -> Path:
     return pdf_path
 
 
-def _build_pdf_file_url(metadata: dict) -> str | None:
-    source_file = metadata.get("source_file")
-    if not source_file:
-        return None
+def _content_to_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for part in content:
+            if isinstance(part, dict):
+                if part.get("type") == "text":
+                    parts.append(str(part.get("text", "")))
+                else:
+                    parts.append(str(part))
+            else:
+                parts.append(str(part))
+        return "\n".join(p for p in parts if p).strip()
+    return str(content or "")
 
-    page = int(metadata.get("page", 0)) + 1
-    return f"/pdf-file/{quote(Path(source_file).name)}#page={page}"
+
+def _extract_agent_debug(response: dict[str, Any]) -> tuple[list[str], list[str]]:
+    messages = response.get("messages") or []
+    tool_calls: list[str] = []
+    source_lines: list[str] = []
+
+    for msg in messages:
+        if isinstance(msg, dict):
+            msg_type = str(msg.get("type", ""))
+            role = str(msg.get("role", ""))
+            name = str(msg.get("name", ""))
+            text = _content_to_text(msg.get("content", ""))
+        else:
+            msg_type = str(getattr(msg, "type", ""))
+            role = str(getattr(msg, "role", ""))
+            name = str(getattr(msg, "name", ""))
+            text = _content_to_text(getattr(msg, "content", ""))
+
+        if msg_type == "tool" or role == "tool":
+            tool_calls.append(name or "unknown_tool")
+            if "Sources:" in text:
+                _, _, source_section = text.partition("Sources:")
+                for line in source_section.strip().splitlines():
+                    cleaned = line.strip()
+                    if cleaned:
+                        source_lines.append(cleaned)
+
+    return tool_calls, source_lines
+
+
+def _is_pdf_file(file: cl.File) -> bool:
+    mime = (file.mime or "").lower()
+    name = (file.name or "").lower()
+    path = (file.path or "").lower()
+    return mime == "application/pdf" or name.endswith(".pdf") or path.endswith(".pdf")
+
+
+def _get_pdf_attachments(message: cl.Message) -> list[cl.File]:
+    elements = getattr(message, "elements", None) or []
+    pdf_files: list[cl.File] = []
+
+    for element in elements:
+        if isinstance(element, cl.File) and _is_pdf_file(element):
+            pdf_files.append(element)
+
+    return pdf_files
+
+
+async def handle_pdf_attachments(files: list[cl.File]) -> None:
+    progress = cl.Message(content=f"Saving and indexing {len(files)} attached PDF(s)...")
+    await progress.send()
+
+    successes: list[str] = []
+    failures: list[str] = []
+    latest_vector_count: int | None = None
+
+    for uploaded in files:
+        try:
+            stored_path = await cl.make_async(service.save_uploaded_pdf)(
+                uploaded.path,
+                uploaded.name,
+            )
+            summary = await cl.make_async(service.ingest_pdf)(str(stored_path))
+            successes.append(
+                f"`{summary['file_name']}` (pages: `{summary['pages']}`, chunks: `{summary['chunks']}`)"
+            )
+            latest_vector_count = summary["vector_count"]
+        except Exception as exc:
+            failures.append(f"`{uploaded.name}`: {exc}")
+
+    lines = []
+    if successes:
+        lines.append("Added PDFs:")
+        lines.extend(f"- {item}" for item in successes)
+    if failures:
+        lines.append("Failed PDFs:")
+        lines.extend(f"- {item}" for item in failures)
+    if latest_vector_count is not None:
+        lines.append(f"Total indexed chunks: `{latest_vector_count}`")
+
+    progress.content = "\n".join(lines) if lines else "No PDF attachments were processed."
+    await progress.update()
 
 
 @app.get("/pdf-file/{file_name}")
@@ -49,11 +142,14 @@ async def pdf_file(file_name: str):
 
 @cl.on_chat_start
 async def on_chat_start() -> None:
+    global agent
+
     status_message = cl.Message(content="Preparing the RAG pipeline...")
     await status_message.send()
 
     try:
         await cl.make_async(service.ensure_pipeline)()
+        agent = create_app_agent(config=service.config, service=service)
     except Exception as exc:
         status_message.content = (
             "I couldn't initialize the pipeline. "
@@ -63,141 +159,77 @@ async def on_chat_start() -> None:
         return
 
     status = service.get_status()
+    cl.user_session.set("debug_mode", False)
     status_message.content = (
         "RAG assistant is ready.\n\n"
         f"- Collection: `{status['collection_name']}`\n"
         f"- Indexed chunks: `{status['vector_count']}`\n"
-        f"- PDF directory: `{status['pdf_directory']}`\n\n"
-        "Type `/upload` any time to add a PDF."
+        f"- PDF directory: `{status['pdf_directory']}`\n"
+        "- Debug: `off` (use `/debug on`)\n\n"
+        "Attach a PDF with the paperclip button any time to add it to the knowledge base."
     )
     await status_message.update()
 
 
-async def handle_pdf_upload() -> None:
-    files = await cl.AskFileMessage(
-        content="Upload a PDF to add it to the knowledge base.",
-        accept=["application/pdf"],
-        max_files=1,
-        max_size_mb=25,
-        timeout=180,
-    ).send()
-
-    if not files:
-        await cl.Message(content="Upload cancelled or timed out.").send()
-        return
-
-    uploaded = files[0]
-    progress = cl.Message(content=f"Saving and indexing `{uploaded.name}`...")
-    await progress.send()
-
-    try:
-        stored_path = await cl.make_async(service.save_uploaded_pdf)(
-            uploaded.path,
-            uploaded.name,
-        )
-        summary = await cl.make_async(service.ingest_pdf)(str(stored_path))
-    except Exception as exc:
-        progress.content = f"I couldn't add that PDF: {exc}"
-        await progress.update()
-        return
-
-    progress.content = (
-        f"Added `{summary['file_name']}` successfully.\n\n"
-        f"- Pages loaded: `{summary['pages']}`\n"
-        f"- Chunks added: `{summary['chunks']}`\n"
-        f"- Total indexed chunks: `{summary['vector_count']}`"
-    )
-    await progress.update()
-
-
 @cl.on_message
 async def on_message(message: cl.Message) -> None:
-    query = message.content.strip()
+    global agent
+
+    attached_pdfs = _get_pdf_attachments(message)
+    if attached_pdfs:
+        await handle_pdf_attachments(attached_pdfs)
+
+    query = _content_to_text(message.content).strip()
     if not query:
-        await cl.Message(content="Please enter a question about your documents.").send()
+        if not attached_pdfs:
+            await cl.Message(content="Please enter a question about your documents.").send()
         return
 
-    if query.lower() in UPLOAD_COMMANDS:
-        await handle_pdf_upload()
+    lower_query = query.lower()
+    if lower_query in DEBUG_COMMANDS:
+        if lower_query == "/debug on":
+            cl.user_session.set("debug_mode", True)
+            await cl.Message(
+                content="Debug mode is now ON. I will show tool calls and PDF sources."
+            ).send()
+            return
+        if lower_query == "/debug off":
+            cl.user_session.set("debug_mode", False)
+            await cl.Message(content="Debug mode is now OFF.").send()
+            return
+        debug_enabled = bool(cl.user_session.get("debug_mode"))
+        await cl.Message(
+            content=f"Debug mode is currently `{'on' if debug_enabled else 'off'}`."
+        ).send()
         return
 
     thinking = cl.Message(content="Searching your documents and drafting an answer...")
     await thinking.send()
 
     try:
-        result = await cl.make_async(service.query)(query)
+        if agent is None:
+            agent = create_app_agent(config=service.config, service=service)
+        response = await cl.make_async(invoke_agent)(agent, query)
+        answer_text = get_agent_text(response).strip()
+        if not answer_text:
+            raise ValueError("Agent returned an empty response.")
+        if bool(cl.user_session.get("debug_mode")):
+            tool_calls, source_lines = _extract_agent_debug(response)
+            tool_line = (
+                f"Tool called: `{', '.join(tool_calls)}`"
+                if tool_calls
+                else "Tool called: `none`"
+            )
+            sources_block = (
+                "\n".join(source_lines) if source_lines else "No PDF sources captured."
+            )
+            answer_text = (
+                f"{answer_text}\n\n---\n"
+                f"Debug\n{tool_line}\nSources\n{sources_block}"
+            )
+        thinking.content = answer_text
+        await thinking.update()
+        return
     except Exception as exc:
         thinking.content = f"I ran into an error while answering: {exc}"
         await thinking.update()
-        return
-
-    elements = []
-    for index, doc in enumerate(result["results"], start=1):
-        metadata = doc["metadata"]
-        pdf_url = _build_pdf_file_url(metadata)
-        page_number = int(metadata.get("page", 0)) + 1
-        source_name = (
-            metadata.get("source_file")
-            or metadata.get("source")
-            or metadata.get("file_name")
-            or metadata.get("filename")
-            or f"Source {index}"
-        )
-        source_lines = [
-            f"Similarity score: {doc['similarity_score']:.3f}",
-            f"Page: {page_number}",
-            "",
-            doc["content"],
-            "",
-            "Metadata:",
-            str(metadata),
-        ]
-        if pdf_url:
-            source_lines.extend(["", f"Open PDF: {pdf_url}"])
-        elements.append(
-            cl.Text(
-                name=f"source_{index}",
-                content="\n".join(source_lines),
-                display="side",
-            )
-        )
-        if metadata.get("source_file") and pdf_url:
-            pdf_path = _resolve_pdf_path(metadata["source_file"])
-            elements.append(
-                cl.Pdf(
-                    name=f"{source_name} - page {page_number}",
-                    path=str(pdf_path),
-                    page=page_number,
-                    display="side",
-                )
-            )
-
-    source_summary = ""
-    if result["results"]:
-        bullets = []
-        for index, doc in enumerate(result["results"], start=1):
-            metadata = doc["metadata"]
-            source_name = (
-                metadata.get("source_file")
-                or metadata.get("source")
-                or metadata.get("file_name")
-                or metadata.get("filename")
-                or f"Source {index}"
-            )
-            page_number = int(metadata.get("page", 0)) + 1
-            pdf_url = _build_pdf_file_url(metadata)
-            if pdf_url:
-                bullets.append(
-                    f"{index}. [{source_name} - page {page_number}]({pdf_url}) "
-                    f"({doc['similarity_score']:.3f})"
-                )
-            else:
-                bullets.append(
-                    f"{index}. `{source_name}` page {page_number} "
-                    f"({doc['similarity_score']:.3f})"
-                )
-        source_summary = "\n\nSources\n" + "\n".join(bullets)
-
-    thinking.content = f"{result['answer']}{source_summary}"
-    thinking.elements = elements
-    await thinking.update()
