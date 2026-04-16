@@ -2,11 +2,13 @@ import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
+from typing import Any
 
 from scr.config import PipelineConfig
 from scr.loader import process_pdf_file
-from scr.pipeline import initialize_pipeline, rag_simple
+from scr.pipeline import initialize_pipeline
 from scr.splitter import split_documents
+from scr.vector_store import VectorStore
 
 
 class PipelineService:
@@ -39,6 +41,8 @@ class PipelineService:
 
         if pipeline is not None:
             vector_count = pipeline["vector_store"].count()
+        else:
+            vector_count = self.get_persisted_vector_count()
 
         return {
             "ready": pipeline is not None,
@@ -54,22 +58,27 @@ class PipelineService:
             "last_error": self.last_error,
         }
 
+    def get_persisted_vector_count(self) -> int:
+        vector_store = VectorStore(
+            collection=self.config.collection_name,
+            persist_directory=str(self.config.persist_directory),
+        )
+        return vector_store.count()
+
     def query(self, query: str, n_results: int | None = None):
         pipeline = self.ensure_pipeline()
         result_count = n_results or self.config.retrieval_results
-        rewritten_query = pipeline["rag_retriever"].rewrite_query(query)
-        rag_result = rag_simple(
+        results = pipeline["rag_retriever"].retriever(
             query=query,
-            llm=pipeline["llm"],
-            retriever=pipeline["rag_retriever"],
-            config=self.config,
             n_results=result_count,
+            threshold=self.config.similarity_threshold,
         )
+        context = self._build_context(results)
         return {
             "query": query,
-            "retrieval_query": rewritten_query,
-            "answer": rag_result["answer"],
-            "results": rag_result["results"],
+            "retrieval_query": query.strip(),
+            "context": context,
+            "results": results,
         }
 
     def retrieve(
@@ -133,3 +142,24 @@ class PipelineService:
             "chunks": len(split_docs),
             "vector_count": pipeline["vector_store"].count(),
         }
+
+    def _build_context(self, results: list[dict[str, Any]]) -> str:
+        if not results:
+            return ""
+
+        context_parts: list[str] = []
+        for idx, doc in enumerate(results, start=1):
+            metadata = doc.get("metadata", {}) or {}
+            source_name = (
+                metadata.get("source_file")
+                or metadata.get("source")
+                or metadata.get("file_name")
+                or metadata.get("filename")
+                or f"Source {idx}"
+            )
+            page_number = int(metadata.get("page", 0)) + 1
+            context_parts.append(
+                f"[Source {idx}: {source_name}, page {page_number}]\n{doc.get('content', '').strip()}"
+            )
+
+        return "\n\n".join(part for part in context_parts if part.strip())

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 from pathlib import Path
+from urllib.parse import quote
+import re
 
 import chainlit as cl
 from chainlit.server import app
@@ -16,6 +18,9 @@ from scr.services.pipeline_service import PipelineService
 service = PipelineService(config=PipelineConfig())
 agent = None
 DEBUG_COMMANDS = {"/debug on", "/debug off", "/debug status"}
+SOURCE_LINE_RE = re.compile(
+    r"^\d+\.\s+file=(?P<file>.+?)\s+\|\s+page=(?P<page>\d+)\s+\|\s+score=(?P<score>\d+(?:\.\d+)?)$"
+)
 
 
 def _resolve_pdf_path(file_name: str) -> Path:
@@ -78,6 +83,124 @@ def _extract_agent_debug(response: dict[str, Any]) -> tuple[list[str], list[str]
                         source_lines.append(cleaned)
 
     return tool_calls, source_lines
+
+
+def _extract_agent_sources(response: dict[str, Any]) -> tuple[list[str], list[dict[str, Any]]]:
+    messages = response.get("messages") or []
+    tool_calls: list[str] = []
+    sources: list[dict[str, Any]] = []
+
+    for msg in messages:
+        if isinstance(msg, dict):
+            msg_type = str(msg.get("type", ""))
+            role = str(msg.get("role", ""))
+            name = str(msg.get("name", ""))
+            text = _content_to_text(msg.get("content", ""))
+        else:
+            msg_type = str(getattr(msg, "type", ""))
+            role = str(getattr(msg, "role", ""))
+            name = str(getattr(msg, "name", ""))
+            text = _content_to_text(getattr(msg, "content", ""))
+
+        if msg_type != "tool" and role != "tool":
+            continue
+
+        tool_name = name or "unknown_tool"
+        tool_calls.append(tool_name)
+        if tool_name != "rag_search" or "Sources:" not in text:
+            continue
+
+        _, _, source_section = text.partition("Sources:")
+        for line in source_section.strip().splitlines():
+            cleaned = line.strip()
+            if not cleaned or cleaned.lower() == "none":
+                continue
+            match = SOURCE_LINE_RE.match(cleaned)
+            if not match:
+                continue
+            sources.append(
+                {
+                    "file_name": Path(match.group("file")).name,
+                    "page": int(match.group("page")),
+                    "score": float(match.group("score")),
+                }
+            )
+
+    return tool_calls, sources
+
+
+def _build_source_markdown(sources: list[dict[str, Any]]) -> str:
+    if not sources:
+        return "Sources: none"
+
+    lines = ["Sources:"]
+    for idx, source in enumerate(sources, start=1):
+        file_name = source["file_name"]
+        page = int(source["page"])
+        score = float(source["score"])
+        lines.append(
+            f"{idx}. {file_name} (page {page}, score {score:.3f})"
+        )
+    return "\n".join(lines)
+
+
+def _build_source_elements(sources: list[dict[str, Any]]) -> list[cl.Pdf]:
+    elements: list[cl.Pdf] = []
+
+    for idx, source in enumerate(sources, start=1):
+        file_name = source["file_name"]
+        page = int(source["page"])
+        pdf_path = _resolve_pdf_path(file_name)
+        elements.append(
+            cl.Pdf(
+                name=f"{idx}. {file_name} (page {page})",
+                path=str(pdf_path),
+                display="side",
+                page=page,
+            )
+        )
+
+    return elements
+
+
+def _build_source_actions(sources: list[dict[str, Any]]) -> list[cl.Action]:
+    actions: list[cl.Action] = []
+
+    for idx, source in enumerate(sources, start=1):
+        file_name = source["file_name"]
+        page = int(source["page"])
+        actions.append(
+            cl.Action(
+                name="open_pdf_source",
+                label=f"Open Source {idx}",
+                tooltip=f"Open {file_name} at page {page}",
+                payload={
+                    "file_name": file_name,
+                    "page": page,
+                    "source_index": idx,
+                },
+            )
+        )
+
+    return actions
+
+
+@cl.action_callback("open_pdf_source")
+async def open_pdf_source(action: cl.Action) -> None:
+    payload = action.payload or {}
+    file_name = Path(str(payload.get("file_name", ""))).name
+    page = int(payload.get("page", 1))
+    source_index = int(payload.get("source_index", 1))
+    pdf_path = _resolve_pdf_path(file_name)
+
+    pdf_element = cl.Pdf(
+        name=f"{source_index}. {file_name} (page {page})",
+        path=str(pdf_path),
+        display="side",
+        page=page,
+    )
+    await cl.ElementSidebar.set_title(f"Source {source_index}")
+    await cl.ElementSidebar.set_elements([pdf_element], key=f"{file_name}:{page}")
 
 
 def _is_pdf_file(file: cl.File) -> bool:
@@ -144,15 +267,14 @@ async def pdf_file(file_name: str):
 async def on_chat_start() -> None:
     global agent
 
-    status_message = cl.Message(content="Preparing the RAG pipeline...")
+    status_message = cl.Message(content="Preparing the RAG assistant...")
     await status_message.send()
 
     try:
-        await cl.make_async(service.ensure_pipeline)()
         agent = create_app_agent(config=service.config, service=service)
     except Exception as exc:
         status_message.content = (
-            "I couldn't initialize the pipeline. "
+            "I couldn't initialize the assistant. "
             f"Please check your configuration and documents.\n\nError: {exc}"
         )
         await status_message.update()
@@ -163,8 +285,9 @@ async def on_chat_start() -> None:
     status_message.content = (
         "RAG assistant is ready.\n\n"
         f"- Collection: `{status['collection_name']}`\n"
-        f"- Indexed chunks: `{status['vector_count']}`\n"
+        f"- Indexed chunks already stored: `{status['vector_count']}`\n"
         f"- PDF directory: `{status['pdf_directory']}`\n"
+        "- Pipeline loading: `lazy` (loads on first RAG search or PDF upload)\n"
         "- Debug: `off` (use `/debug on`)\n\n"
         "Attach a PDF with the paperclip button any time to add it to the knowledge base."
     )
@@ -213,8 +336,14 @@ async def on_message(message: cl.Message) -> None:
         answer_text = get_agent_text(response).strip()
         if not answer_text:
             raise ValueError("Agent returned an empty response.")
+        tool_calls, sources = _extract_agent_sources(response)
+        if "rag_search" in tool_calls:
+            if sources:
+                source_markdown = _build_source_markdown(sources)
+                if "Sources:" not in answer_text:
+                    answer_text = f"{answer_text}\n\n{source_markdown}"
         if bool(cl.user_session.get("debug_mode")):
-            tool_calls, source_lines = _extract_agent_debug(response)
+            _, source_lines = _extract_agent_debug(response)
             tool_line = (
                 f"Tool called: `{', '.join(tool_calls)}`"
                 if tool_calls
@@ -228,6 +357,10 @@ async def on_message(message: cl.Message) -> None:
                 f"Debug\n{tool_line}\nSources\n{sources_block}"
             )
         thinking.content = answer_text
+        if sources:
+            thinking.actions = _build_source_actions(sources)
+            await cl.ElementSidebar.set_title("Sources")
+            await cl.ElementSidebar.set_elements(_build_source_elements(sources), key=thinking.id)
         await thinking.update()
         return
     except Exception as exc:

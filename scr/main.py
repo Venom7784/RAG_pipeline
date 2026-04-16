@@ -10,13 +10,13 @@ else:
 
 def main():
     if __package__ is None or __package__ == "":
-        from scr.pipeline import build_pipeline, rag_simple
+        from scr.pipeline import initialize_pipeline
     else:
-        from .pipeline import build_pipeline, rag_simple
+        from .pipeline import initialize_pipeline
 
     config = PipelineConfig()
-    print("Building PDF RAG pipeline...")
-    pipeline = build_pipeline(config)
+    print("Initializing PDF RAG pipeline...")
+    pipeline = initialize_pipeline(config)
     print("Pipeline ready.")
     print("Type your question and press Enter. Type 'exit' to quit.")
 
@@ -30,13 +30,17 @@ def main():
             print("Exiting CLI.")
             break
 
-        rag_result = rag_simple(
+        results = pipeline["rag_retriever"].retriever(
             query=query,
-            llm=pipeline["llm"],
-            retriever=pipeline["rag_retriever"],
-            config=config,
+            n_results=config.retrieval_results,
+            threshold=config.similarity_threshold,
         )
-        print(f"\nAnswer:\n{rag_result['answer']}")
+        if not results:
+            print("\nNo context found to answer the question.")
+            continue
+
+        context = "\n\n".join(doc["content"] for doc in results)
+        print(f"\nContext:\n{context}")
 
 
 if __name__ == "__main__":

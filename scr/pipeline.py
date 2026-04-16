@@ -1,65 +1,9 @@
-import os
-
-from dotenv import load_dotenv
-from langchain_groq import ChatGroq
-
 from .config import PipelineConfig
 from .embeddings import EmbeddingManager
 from .loader import process_pdfs_in_directory
-from .query_rewriter import QueryRewriter
 from .retriever import RAGRetriever
 from .splitter import split_documents
 from .vector_store import VectorStore
-
-
-def _create_llm(
-    model_name: str,
-    temperature: float,
-    max_tokens: int,
-):
-    load_dotenv()
-    groq_api_key = os.getenv("GROQ_API_KEY")
-    if not groq_api_key:
-        raise ValueError("GROQ_API_KEY was not found in the environment.")
-
-    return ChatGroq(
-        groq_api_key=groq_api_key,
-        model_name=model_name,
-        temperature=temperature,
-        max_tokens=max_tokens,
-    )
-
-
-def rag_simple(
-    query,
-    llm,
-    retriever,
-    config: PipelineConfig,
-    n_results: int | None = None,
-    threshold: float | None = None,
-):
-    result_count = n_results if n_results is not None else config.retrieval_results
-    similarity_threshold = (
-        threshold if threshold is not None else config.similarity_threshold
-    )
-    results = retriever.retriever(
-        query=query,
-        n_results=result_count,
-        threshold=similarity_threshold,
-    )
-    context = "\n\n".join(doc["content"] for doc in results) if results else ""
-    if not context:
-        return {
-            "answer": "No context found to answer the question",
-            "results": results,
-        }
-    response = llm.invoke(
-        f"Answer the Question using this context question={query} context={context}"
-    )
-    return {
-        "answer": response.content,
-        "results": results,
-    }
 
 
 def initialize_pipeline(config: PipelineConfig):
@@ -99,15 +43,9 @@ def initialize_pipeline(config: PipelineConfig):
             f"with {vector_store.count()} documents."
         )
 
-    llm = _create_llm(
-        model_name=config.groq_model_name,
-        temperature=config.temperature,
-        max_tokens=config.max_tokens,
-    )
     rag_retriever = RAGRetriever(
         vector_store=vector_store,
         embedding_manager=embedding_manager,
-        query_rewriter=QueryRewriter(llm=llm),
     )
 
     return {
@@ -117,53 +55,4 @@ def initialize_pipeline(config: PipelineConfig):
         "embeddings": embeddings,
         "vector_store": vector_store,
         "rag_retriever": rag_retriever,
-        "llm": llm,
-    }
-
-
-def build_pipeline(config: PipelineConfig):
-    documents = process_pdfs_in_directory(str(config.pdf_directory))
-    split_docs = []
-    if documents:
-        split_docs = split_documents(
-            documents=documents,
-            chunk_size=config.chunk_size,
-            chunk_overlap=config.chunk_overlap,
-        )
-
-    embedding_manager = EmbeddingManager(model_name=config.embedding_model_name)
-    embeddings = []
-    if split_docs:
-        text = [doc.page_content for doc in split_docs]
-        embeddings = embedding_manager(text)
-    embedding_dimension = embedding_manager.model.get_sentence_embedding_dimension()
-
-    vector_store = VectorStore(
-        collection=config.collection_name,
-        persist_directory=str(config.persist_directory),
-        embedding_dimension=embedding_dimension,
-        embedding_model_name=config.embedding_model_name,
-    )
-    if split_docs:
-        vector_store.add_documents(split_docs, embeddings)
-
-    llm = _create_llm(
-        model_name=config.groq_model_name,
-        temperature=config.temperature,
-        max_tokens=config.max_tokens,
-    )
-    rag_retriever = RAGRetriever(
-        vector_store=vector_store,
-        embedding_manager=embedding_manager,
-        query_rewriter=QueryRewriter(llm=llm),
-    )
-
-    return {
-        "documents": documents,
-        "split_docs": split_docs,
-        "embedding_manager": embedding_manager,
-        "embeddings": embeddings,
-        "vector_store": vector_store,
-        "rag_retriever": rag_retriever,
-        "llm": llm,
     }

@@ -14,10 +14,11 @@ from .tools import rag_search, set_rag_search_service
 
 DEFAULT_SYSTEM_PROMPT = (
     "You are a helpful assistant for a PDF RAG application. "
-    "When a question depends on the uploaded PDFs, call the `rag_search` tool first "
-    "and ground your final answer in its results. "
-    "If the user asks a general question not related to the PDFs, answer directly. "
-    "Answer clearly and briefly. If you do not know the answer, say so."
+    "For every user question, call the `rag_search` tool first before answering. "
+    "If the tool returns retrieved context, use that context as the primary grounding for your answer. "
+    "If the tool reports that no context was found, then answer from your own knowledge instead of pretending the documents contained the answer. "
+    "When you answer from your own knowledge after an empty tool result, be clear that no relevant document context was retrieved. "
+    "Answer clearly and descriptively. If you do not know the answer, say so."
 )
 
 

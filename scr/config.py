@@ -46,7 +46,7 @@ class PipelineConfig:
     temperature: float = float(os.getenv("TEMPERATURE", "0.1"))
     max_tokens: int = int(os.getenv("MAX_TOKENS", "1024"))
     retrieval_results: int = int(os.getenv("RETRIEVAL_RESULTS", "5"))
-    similarity_threshold: float = float(os.getenv("SIMILARITY_THRESHOLD", "0.45"))
+    similarity_threshold: float = float(os.getenv("SIMILARITY_THRESHOLD", "0.65"))
 
     def __post_init__(self):
         self.pdf_directory = Path(self.pdf_directory)
